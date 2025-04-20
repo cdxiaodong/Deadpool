@@ -13,6 +13,22 @@ var (
 	semaphore     chan struct{}
 )
 
+// GetCurrentProxyIndex 获取当前代理索引
+func GetCurrentProxyIndex() int {
+	mu.Lock()
+	defer mu.Unlock()
+	return proxyIndex
+}
+
+// SetNextProxyIndex 设置下一个代理索引
+func SetNextProxyIndex() {
+	mu.Lock()
+	defer mu.Unlock()
+	if len(EffectiveList) > 0 {
+		proxyIndex = (proxyIndex + 1) % len(EffectiveList)
+	}
+}
+
 func Banner() {
 	banner := `
    ____                        __                          ___      
