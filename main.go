@@ -16,16 +16,53 @@ import (
 func main() {
 	utils.Banner()
 	fmt.Print("By:thinkoaa GitHub:https://github.com/thinkoaa/Deadpool\n\n\n")
-	//读取配置文件
-	config, err := utils.LoadConfig("config.toml")
+
+	// 解析命令行参数
+	configPath := "config.toml"
+	lastDataPath := utils.LastDataFile
+	help := false
+
+	for i := 1; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		if arg == "-h" || arg == "--help" {
+			help = true
+		} else if arg == "-c" || arg == "--config" {
+			if i+1 < len(os.Args) {
+				configPath = os.Args[i+1]
+				i++
+			}
+		} else if arg == "-l" || arg == "--lastdata" {
+			if i+1 < len(os.Args) {
+				lastDataPath = os.Args[i+1]
+				utils.LastDataFile = lastDataPath
+				i++
+			}
+		}
+	}
+
+	if help {
+		fmt.Println("Deadpool 代理池工具 使用帮助:")
+		fmt.Println("  -h, --help          显示此帮助信息")
+		fmt.Println("  -c, --config <path> 指定配置文件路径 (默认: config.toml)")
+		fmt.Println("  -l, --lastdata <path> 指定lastdata文件路径 (默认: lastData.txt)")
+		fmt.Println("                      使用此选项时，不会重新从网络空间获取代理")
+		os.Exit(0)
+	}
+
+	// 读取配置文件
+	config, err := utils.LoadConfig(configPath)
 	if err != nil {
-		fmt.Printf("config.toml配置文件存在错误字符: %d\n", err) //通过%d弹出错误的细节
+		fmt.Printf("配置文件 %s 存在错误: %v\n", configPath, err)
 		os.Exit(1)
 	}
 
-	//从本地文件中取socks代理
+	// 从本地文件中取socks代理
 	fmt.Print("***直接使用fmt打印当前使用的代理,若高并发时,命令行打印可能会阻塞，不对打印做特殊处理，可忽略，不会影响实际的请求转发***\n\n")
-	utils.GetSocks(config)
+	if lastDataPath == utils.LastDataFile {
+		// 未指定自定义lastdata路径时，从网络空间获取代理
+		utils.GetSocks(config)
+	}
+
 	if len(utils.SocksList) == 0 {
 		fmt.Println("未发现代理数据,请调整配置信息,或向" + utils.LastDataFile + "中直接写入IP:PORT格式的socks5代理\n程序退出")
 		os.Exit(1)
@@ -95,6 +132,24 @@ func main() {
 	server, _ := socks5.New(conf)
 	listener := config.Listener.IP + ":" + strconv.Itoa(config.Listener.Port)
 	fmt.Printf("======其他工具通过配置 socks5://%v 使用收集的代理,如有账号密码，记得配置======\n", listener)
+	fmt.Println("按回车键切换到下一个代理IP...")
+
+	// 使用goroutine监听键盘输入
+	go func() {
+		for {
+			var input string
+			fmt.Scanln(&input)
+			utils.SetNextProxyIndex()
+			currentIndex := utils.GetCurrentProxyIndex()
+			if len(utils.EffectiveList) > 0 {
+				fmt.Printf("已切换到代理IP: %s (索引: %d/%d)\n", utils.EffectiveList[currentIndex], currentIndex+1, len(utils.EffectiveList))
+			} else {
+				fmt.Println("没有可用的代理IP")
+			}
+			fmt.Println("按回车键切换到下一个代理IP...")
+		}
+	}()
+
 	if err := server.ListenAndServe("tcp", listener); err != nil {
 		fmt.Printf("本地监听服务启动失败：%v\n", err)
 		os.Exit(1)
