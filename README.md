@@ -53,6 +53,23 @@ deadpool代理池工具，可从**hunter**、**quake**、**fofa**等**网络空�
 
 ### 0x03 配置使用
 
+**命令行参数**
+
+Deadpool支持以下命令行参数：
+
+- `-h, --help`：显示帮助信息
+- `-c, --config <path>`：指定配置文件路径（默认：config.toml）
+- `-l, --lastdata <path>`：指定lastdata文件路径（默认：lastData.txt）。使用此选项时，不会重新从网络空间获取代理，只使用指定的文件中的代理。
+
+示例：
+```
+./deadpool -c custom_config.toml -l my_proxies.txt
+```
+
+**运行中切换代理IP**
+
+在程序运行过程中，您可以通过按回车键切换到下一个可用代理IP。每次切换后，程序会显示当前使用的代理IP及其在代理列表中的位置。
+
 **burp中配置**
 
 <img src="images/burp.png" style="zoom: 28%;" width="65%" height="65%"/>
@@ -231,4 +248,3 @@ exit 0
 完整目录结构：
 
 ![alt text](./images/struct.png)
-
