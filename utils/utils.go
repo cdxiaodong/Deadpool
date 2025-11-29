@@ -215,7 +215,21 @@ func DefineDial(ctx context.Context, network, address string) (net.Conn, error) 
 }
 
 func transmitReqFromClient(network string, address string) (net.Conn, error) {
+	// 限制递归深度，避免无限递归
+	const maxRetries = 10
+	return transmitReqFromClientWithRetry(network, address, maxRetries)
+}
+
+func transmitReqFromClientWithRetry(network string, address string, retriesLeft int) (net.Conn, error) {
+	if retriesLeft <= 0 {
+		return nil, fmt.Errorf("所有代理都无效，无法建立连接")
+	}
+
 	tempProxy := getNextProxy()
+	if tempProxy == "" {
+		return nil, fmt.Errorf("已无可用代理，请重新运行程序")
+	}
+
 	fmt.Println(time.Now().Format("2006-01-02 15:04:05") + "\t" + tempProxy)
 	// 超时时间设置为 5 秒
 	timeout := time.Duration(Timeout) * time.Second
@@ -229,7 +243,7 @@ func transmitReqFromClient(network string, address string) (net.Conn, error) {
 	if err != nil {
 		delInvalidProxy(tempProxy)
 		fmt.Printf("%s无效，自动切换下一个......\n", tempProxy)
-		return transmitReqFromClient(network, address)
+		return transmitReqFromClientWithRetry(network, address, retriesLeft-1)
 	}
 
 	return conn, nil
@@ -240,9 +254,13 @@ func getNextProxy() string {
 	defer mu.Unlock()
 	if len(EffectiveList) == 0 {
 		fmt.Println("***已无可用代理，请重新运行程序***")
+		return "" // 返回空字符串而不是panic
 	}
 	if len(EffectiveList) <= 2 {
 		fmt.Printf("***可用代理已仅剩%v个,%v，***\n", len(EffectiveList), EffectiveList)
+	}
+	if proxyIndex >= len(EffectiveList) {
+		proxyIndex = 0 // 重置索引防止越界
 	}
 	proxy := EffectiveList[proxyIndex]
 	proxyIndex = (proxyIndex + 1) % len(EffectiveList) // 循环访问
@@ -252,19 +270,25 @@ func getNextProxy() string {
 // 使用过程中删除无效的代理
 func delInvalidProxy(proxy string) {
 	mu.Lock()
+	defer mu.Unlock()
+
 	for i, p := range EffectiveList {
 		if p == proxy {
 			EffectiveList = append(EffectiveList[:i], EffectiveList[i+1:]...)
-			if proxyIndex != 0 {
-				proxyIndex = proxyIndex - 1
+			// 调整 proxyIndex 以避免越界
+			if i < proxyIndex {
+				proxyIndex--
+			} else if i == proxyIndex && proxyIndex >= len(EffectiveList) {
+				proxyIndex = 0
 			}
 			break
 		}
 	}
-	if proxyIndex >= len(EffectiveList) {
-		proxyIndex = 0
+
+	// 再次确保 proxyIndex 不越界
+	if len(EffectiveList) > 0 && proxyIndex >= len(EffectiveList) {
+		proxyIndex = proxyIndex % len(EffectiveList)
 	}
-	mu.Unlock()
 }
 
 func GetSocks(config Config) {
