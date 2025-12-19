@@ -13,6 +13,7 @@ type Config struct {
 	FOFA       FOFAConfig       `toml:"FOFA"`
 	QUAKE      QUAKEConfig      `toml:"QUAKE"`
 	HUNTER     HUNTERConfig     `toml:"HUNTER"`
+	Glider     GliderConfig     `toml:"glider"`
 }
 
 type ListenerConfig struct {
@@ -65,6 +66,18 @@ type HUNTERConfig struct {
 	Key         string `toml:"key"`
 	QueryString string `toml:"queryString"`
 	ResultSize  int    `toml:"resultSize"`
+}
+
+// GliderConfig holds configuration for integrating with the external glider
+// binary. When Bin is empty, PATH will be searched for "glider".
+type GliderConfig struct {
+	Bin             string `toml:"bin"`
+	LocalPortStart  int    `toml:"local_port_start"`
+	LocalPortEnd    int    `toml:"local_port_end"`
+	MaxConnectors   int    `toml:"max_connectors"`
+	StartTimeoutSec int    `toml:"start_timeout_sec"`
+	MaxBackoffSec   int    `toml:"max_backoff_sec"`
+	Verbose         bool   `toml:"verbose"`
 }
 
 func LoadConfig(path string) (Config, error) {

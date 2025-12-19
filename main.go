@@ -56,6 +56,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// 初始化 glider 相关配置（如果未安装 glider，将自动降级为纯 socks5 模式）
+	utils.InitGlider(config.Glider)
+	defer utils.CleanupConnectors()
+
 	// 从本地文件中取socks代理
 	fmt.Print("***直接使用fmt打印当前使用的代理,若高并发时,命令行打印可能会阻塞，不对打印做特殊处理，可忽略，不会影响实际的请求转发***\n\n")
 	if lastDataPath == utils.LastDataFile {

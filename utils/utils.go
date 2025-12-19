@@ -87,6 +87,9 @@ func RemoveDuplicates(list *[]string) {
 	*list = result
 }
 
+// CheckSocks performs health checks for the given raw proxy list. It now
+// supports multi-protocol URLs via Endpoint parsing. For non-socks5 protocols
+// it relies on a local glider connector (when available).
 func CheckSocks(checkSocks CheckSocksConfig, socksListParam []string) {
 	startTime := time.Now()
 	maxConcurrentReq := checkSocks.MaxConcurrentReq
@@ -103,15 +106,20 @@ func CheckSocks(checkSocks CheckSocksConfig, socksListParam []string) {
 		reqUrl = checkGeolocateConfig.CheckURL
 	}
 	fmt.Printf("时间:[ %v ] 并发:[ %v ],超时标准:[ %vs ]\n", time.Now().Format("2006-01-02 15:04:05"), maxConcurrentReq, timeout)
+
+	// Build Endpoint slice from raw list.
+	endpoints := BuildEndpointsFromRaw(socksListParam)
+
 	var num int
-	total := len(socksListParam)
+	total := len(endpoints)
 	var tmpEffectiveList []string
+	var tmpEffectiveEndpoints []Endpoint
 	var tmpMu sync.Mutex
-	for _, proxyAddr := range socksListParam {
+	for _, ep := range endpoints {
 
 		Wg.Add(1)
 		semaphore <- struct{}{}
-		go func(proxyAddr string) {
+		go func(ep Endpoint) {
 			tmpMu.Lock()
 			num++
 			fmt.Printf("\r正检测第 [ %v/%v ] 个代理,异步处理中...                    ", num, total)
@@ -121,13 +129,31 @@ func CheckSocks(checkSocks CheckSocksConfig, socksListParam []string) {
 				<-semaphore
 
 			}()
+
+			// Determine which socks5 endpoint to use for health checking.
+			var proxyAddr string
+			if ep.Kind == ProtoSocks5 {
+				proxyAddr = ep.URL.Host
+			} else {
+				if !IsGliderEnabled() {
+					// glider is not available, skip non-socks endpoints.
+					return
+				}
+				connector, err := GetOrCreateConnector(ep)
+				if err != nil {
+					fmt.Printf("创建 glider connector 失败，跳过端点 %s: %v\n", ep.Raw, err)
+					return
+				}
+				proxyAddr = fmt.Sprintf("127.0.0.1:%d", connector.Port)
+			}
+
 			socksProxy := "socks5://" + proxyAddr
-			proxy := func(_ *http.Request) (*url.URL, error) {
+			proxyFn := func(_ *http.Request) (*url.URL, error) {
 				return url.Parse(socksProxy)
 			}
 			tr := &http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-				Proxy:           proxy,
+				Proxy:           proxyFn,
 			}
 			client := &http.Client{
 				Transport: tr,
@@ -175,14 +201,17 @@ func CheckSocks(checkSocks CheckSocksConfig, socksListParam []string) {
 
 			}
 			tmpMu.Lock()
-			tmpEffectiveList = append(tmpEffectiveList, proxyAddr)
+			tmpEffectiveList = append(tmpEffectiveList, ep.Raw)
+			tmpEffectiveEndpoints = append(tmpEffectiveEndpoints, ep)
 			tmpMu.Unlock()
-		}(proxyAddr)
+		}(ep)
 	}
 	Wg.Wait()
 	mu.Lock()
 	EffectiveList = make([]string, len(tmpEffectiveList))
 	copy(EffectiveList, tmpEffectiveList)
+	EffectiveEndpoints = make([]Endpoint, len(tmpEffectiveEndpoints))
+	copy(EffectiveEndpoints, tmpEffectiveEndpoints)
 	proxyIndex = 0
 	mu.Unlock()
 	sec := int(time.Since(startTime).Seconds())
@@ -200,7 +229,13 @@ func WriteLinesToFile() error {
 	defer file.Close()
 
 	writer := bufio.NewWriter(file)
-	for _, line := range EffectiveList {
+	mu.Lock()
+	defer mu.Unlock()
+	for _, ep := range EffectiveEndpoints {
+		line := ep.Raw
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
 		if _, err := writer.WriteString(line + "\n"); err != nil {
 			return err
 		}
@@ -225,12 +260,16 @@ func transmitReqFromClientWithRetry(network string, address string, retriesLeft 
 		return nil, fmt.Errorf("所有代理都无效，无法建立连接")
 	}
 
-	tempProxy := getNextProxy()
-	if tempProxy == "" {
+	ep := getNextEndpoint()
+	if ep.Raw == "" && ep.URL == nil {
 		return nil, fmt.Errorf("已无可用代理，请重新运行程序")
 	}
 
-	fmt.Println(time.Now().Format("2006-01-02 15:04:05") + "\t" + tempProxy)
+	display := ep.Raw
+	if display == "" && ep.URL != nil {
+		display = ep.URL.String()
+	}
+	fmt.Println(time.Now().Format("2006-01-02 15:04:05") + "\t" + display)
 	// 超时时间设置为 5 秒
 	timeout := time.Duration(Timeout) * time.Second
 
@@ -238,23 +277,39 @@ func transmitReqFromClientWithRetry(network string, address string, retriesLeft 
 		Timeout: timeout,
 	}
 
-	dialect, _ := proxy.SOCKS5(network, tempProxy, nil, dialer)
+	// Decide which socks5 we dial: direct upstream or local glider connector.
+	var targetSocksAddr string
+	if ep.Kind == ProtoSocks5 {
+		targetSocksAddr = ep.URL.Host
+	} else {
+		connector, err := GetOrCreateConnector(ep)
+		if err != nil {
+			delInvalidEndpoint(ep)
+			fmt.Printf("glider connector 错误: %v，自动切换下一个......\n", err)
+			return transmitReqFromClientWithRetry(network, address, retriesLeft-1)
+		}
+		targetSocksAddr = fmt.Sprintf("127.0.0.1:%d", connector.Port)
+	}
+
+	dialect, _ := proxy.SOCKS5(network, targetSocksAddr, nil, dialer)
 	conn, err := dialect.Dial(network, address)
 	if err != nil {
-		delInvalidProxy(tempProxy)
-		fmt.Printf("%s无效，自动切换下一个......\n", tempProxy)
+		delInvalidEndpoint(ep)
+		fmt.Printf("%s 无效，自动切换下一个......\n", display)
 		return transmitReqFromClientWithRetry(network, address, retriesLeft-1)
 	}
 
 	return conn, nil
 }
 
-func getNextProxy() string {
+// getNextEndpoint returns the next effective endpoint in a round-robin fashion.
+// It falls back to an "empty" Endpoint when the list is exhausted.
+func getNextEndpoint() Endpoint {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(EffectiveList) == 0 {
 		fmt.Println("***已无可用代理，请重新运行程序***")
-		return "" // 返回空字符串而不是panic
+		return Endpoint{}
 	}
 	if len(EffectiveList) <= 2 {
 		fmt.Printf("***可用代理已仅剩%v个,%v，***\n", len(EffectiveList), EffectiveList)
@@ -262,19 +317,23 @@ func getNextProxy() string {
 	if proxyIndex >= len(EffectiveList) {
 		proxyIndex = 0 // 重置索引防止越界
 	}
-	proxy := EffectiveList[proxyIndex]
+	// EffectiveList 与 EffectiveEndpoints 保持一一对应
+	ep := EffectiveEndpoints[proxyIndex]
 	proxyIndex = (proxyIndex + 1) % len(EffectiveList) // 循环访问
-	return proxy
+	return ep
 }
 
 // 使用过程中删除无效的代理
-func delInvalidProxy(proxy string) {
+func delInvalidEndpoint(ep Endpoint) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	for i, p := range EffectiveList {
-		if p == proxy {
+	for i, raw := range EffectiveList {
+		if raw == ep.Raw {
 			EffectiveList = append(EffectiveList[:i], EffectiveList[i+1:]...)
+			if i < len(EffectiveEndpoints) {
+				EffectiveEndpoints = append(EffectiveEndpoints[:i], EffectiveEndpoints[i+1:]...)
+			}
 			// 调整 proxyIndex 以避免越界
 			if i < proxyIndex {
 				proxyIndex--
@@ -305,4 +364,6 @@ func GetSocks(config Config) {
 	Wg.Wait()
 	//根据IP:PORT去重，此步骤会存在同IP不同端口的情况，这种情况不再单独过滤，这种情况，最终的出口IP可能不一样
 	RemoveDuplicates(&SocksList)
+	// 建立 Endpoint 抽象，支持多协议 URL（vmess/vless/ss/trojan/http/https 等）
+	BuildEndpointsFromRaw(SocksList)
 }

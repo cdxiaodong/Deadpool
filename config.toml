@@ -43,3 +43,18 @@ apiUrl='https://hunter.qianxin.com/openApi/search'
 key = '9c1698e0*****90758edc2******533f9*******048***ce18'
 queryString = 'protocol=="socks5"&&protocol.banner="No authentication"&&ip.country="CN"'
 resultSize=200 #最小为100,按100条/每页翻页，最大值需小于从官网web界面看到的结果数量，值需为100的整倍数，如200、300、1000、2000等
+
+[glider]
+# 可执行路径：为空则使用 PATH 中的 glider
+bin = ""
+# 本地 socks5 监听端口范围（用于 glider Connector）
+local_port_start = 55000
+local_port_end   = 59999
+# 子进程并发上限
+max_connectors = 128
+# 子进程启动超时时间（暂未严格使用，预留）
+start_timeout_sec = 5
+# 失败退避上限（秒）（暂未严格使用，预留）
+max_backoff_sec = 30
+# 是否开启 glider -verbose
+verbose = false
