@@ -21,6 +21,7 @@ func main() {
 	configPath := "config.toml"
 	lastDataPath := utils.LastDataFile
 	help := false
+	failoverMode := false
 
 	for i := 1; i < len(os.Args); i++ {
 		arg := os.Args[i]
@@ -37,6 +38,8 @@ func main() {
 				utils.LastDataFile = lastDataPath
 				i++
 			}
+		} else if arg == "-f" || arg == "--failover" {
+			failoverMode = true
 		}
 	}
 
@@ -46,7 +49,14 @@ func main() {
 		fmt.Println("  -c, --config <path> 指定配置文件路径 (默认: config.toml)")
 		fmt.Println("  -l, --lastdata <path> 指定lastdata文件路径 (默认: lastData.txt)")
 		fmt.Println("                      使用此选项时，不会重新从网络空间获取代理")
+		fmt.Println("  -f, --failover      启用故障切换模式 (只有当前代理失败时才切换)")
 		os.Exit(0)
+	}
+
+	// 设置故障切换模式
+	utils.FailoverMode = failoverMode
+	if failoverMode {
+		fmt.Println("*** 故障切换模式已启用：只有当前代理访问失败时才会切换到下一个代理 ***")
 	}
 
 	// 读取配置文件
@@ -56,16 +66,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 初始化 glider 相关配置（如果未安装 glider，将自动降级为纯 socks5 模式）
-	utils.InitGlider(config.Glider)
-	defer utils.CleanupConnectors()
-
 	// 从本地文件中取socks代理
 	fmt.Print("***直接使用fmt打印当前使用的代理,若高并发时,命令行打印可能会阻塞，不对打印做特殊处理，可忽略，不会影响实际的请求转发***\n\n")
+	// 始终从指定文件读取
+	utils.GetSocksFromFile(lastDataPath)
+	// 如果未指定自定义lastdata路径，也从网络空间获取代理
 	if lastDataPath == utils.LastDataFile {
-		// 未指定自定义lastdata路径时，从网络空间获取代理
 		utils.GetSocks(config)
 	}
+	// 建立 Endpoint 抽象
+	utils.BuildEndpointsFromRaw(utils.SocksList)
 
 	if len(utils.SocksList) == 0 {
 		fmt.Println("未发现代理数据,请调整配置信息,或向" + utils.LastDataFile + "中直接写入IP:PORT格式的socks5代理\n程序退出")

@@ -68,8 +68,7 @@ type HUNTERConfig struct {
 	ResultSize  int    `toml:"resultSize"`
 }
 
-// GliderConfig holds configuration for integrating with the external glider
-// binary. When Bin is empty, PATH will be searched for "glider".
+// GliderConfig 保留与旧版本的配置兼容，目前主体逻辑已内置多协议拨号能力。
 type GliderConfig struct {
 	Bin             string `toml:"bin"`
 	LocalPortStart  int    `toml:"local_port_start"`

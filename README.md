@@ -3,6 +3,11 @@
 deadpool代理池工具，可从**hunter**、**quake**、**fofa**等**网络空间测绘平台取高质量socks5**代理，或**本地导入socks5**代理，轮询使用代理进行流量转发。
 > **开发不易,如果觉得该项目对您有帮助, 麻烦点个Star吧，PS：考虑安全性或用最新功能优化的话，可自行clone源码进行编译，**
 
+**2025-12-19改动：**
+- **内置 glider 核心能力**，直接支持 ss/trojan/vless/vmess 等协议，无需再安装额外 glider 二进制
+- **支持 Clash 配置格式**，可直接在 lastData.txt 中写入 Clash 风格的代理配置（如 `{name: 香港, server: xxx, port: 443, type: ss, cipher: aes-256-gcm, password: xxx}`）
+- **新增故障切换模式** (`-f/--failover`)，启用后只有当前代理失败时才会切换到下一个代理，适合需要稳定 IP 的场景
+
 **2024-09-15改动：增加周期性任务：根据配置信息，定时检测存活、定时从网络空间取代理**
 
 **2024-09-12改动：go环境改为了1.23 ,工具新增了socks5账号密码认证功能，配置文件[listener]下新增了userName和password字段**
@@ -60,10 +65,36 @@ Deadpool支持以下命令行参数：
 - `-h, --help`：显示帮助信息
 - `-c, --config <path>`：指定配置文件路径（默认：config.toml）
 - `-l, --lastdata <path>`：指定lastdata文件路径（默认：lastData.txt）。使用此选项时，不会重新从网络空间获取代理，只使用指定的文件中的代理。
+- `-f, --failover`：启用故障切换模式。启用后，程序会持续使用同一个代理，只有当该代理连接失败时才会自动切换到下一个代理。适合需要稳定出口IP的场景。
 
 示例：
+```bash
+# 普通模式（每次请求轮换代理）
+./deadpool
+
+# 故障切换模式（只有失败时才切换代理）
+./deadpool --failover
+
+# 组合使用
+./deadpool -c custom_config.toml -l my_proxies.txt --failover
 ```
-./deadpool -c custom_config.toml -l my_proxies.txt
+
+**支持的代理格式**
+
+lastData.txt 支持以下格式的代理：
+
+```
+# 普通 socks5 代理
+127.0.0.1:1080
+socks5://192.168.1.1:1080
+
+# ss:// URL 格式
+ss://aes-256-gcm:password@server:port
+
+# Clash 配置格式（推荐）
+{name: 香港节点, server: hk.example.com, port: 443, type: ss, cipher: aes-256-gcm, password: your-password}
+{name: 日本节点, server: jp.example.com, port: 443, type: vmess, uuid: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}
+{name: 美国节点, server: us.example.com, port: 443, type: trojan, password: your-password}
 ```
 
 **运行中切换代理IP**

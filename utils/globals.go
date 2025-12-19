@@ -3,6 +3,8 @@ package utils
 import (
 	"net/url"
 	"sync"
+
+	"github.com/nadoo/glider/proxy"
 )
 
 // ProtoKind represents supported proxy protocol types.
@@ -21,10 +23,10 @@ const (
 // Endpoint is a normalized representation of a proxy entry from lastData.txt
 // or remote discovery (FOFA/HUNTER/QUAKE).
 type Endpoint struct {
-	Raw       string    // original line as in lastData.txt (used for write-back and logging)
-	Kind      ProtoKind // parsed protocol type
-	URL       *url.URL  // normalized URL form
-	LocalSocks string   // local socks5 endpoint when bridged via glider, e.g. 127.0.0.1:55001
+	Raw    string    // original line as in lastData.txt (used for write-back and logging)
+	Kind   ProtoKind // parsed protocol type
+	URL    *url.URL  // normalized URL form
+	Dialer proxy.Dialer
 }
 
 var (
@@ -46,6 +48,9 @@ var (
 	Wg           sync.WaitGroup
 	mu           sync.Mutex
 	semaphore    chan struct{}
+
+	// FailoverMode 故障切换模式：只有当前代理失败时才切换到下一个
+	FailoverMode = false
 )
 
 // GetCurrentProxyIndex 获取当前代理索引

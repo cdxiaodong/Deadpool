@@ -14,8 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/net/proxy"
 )
 
 // 防止goroutine 异步处理问题
@@ -88,8 +86,7 @@ func RemoveDuplicates(list *[]string) {
 }
 
 // CheckSocks performs health checks for the given raw proxy list. It now
-// supports multi-protocol URLs via Endpoint parsing. For non-socks5 protocols
-// it relies on a local glider connector (when available).
+// supports多协议URL via Endpoint parsing and内置的 glider 拨号能力。
 func CheckSocks(checkSocks CheckSocksConfig, socksListParam []string) {
 	startTime := time.Now()
 	maxConcurrentReq := checkSocks.MaxConcurrentReq
@@ -109,14 +106,21 @@ func CheckSocks(checkSocks CheckSocksConfig, socksListParam []string) {
 
 	// Build Endpoint slice from raw list.
 	endpoints := BuildEndpointsFromRaw(socksListParam)
+	requestTimeout := time.Duration(timeout) * time.Second
 
 	var num int
 	total := len(endpoints)
 	var tmpEffectiveList []string
 	var tmpEffectiveEndpoints []Endpoint
 	var tmpMu sync.Mutex
-	for _, ep := range endpoints {
+	for i := range endpoints {
+		epPtr := &endpoints[i]
+		if err := ensureEndpointDialer(epPtr); err != nil {
+			fmt.Printf("忽略无效代理 %s: %v\n", epPtr.Raw, err)
+			continue
+		}
 
+		ep := *epPtr
 		Wg.Add(1)
 		semaphore <- struct{}{}
 		go func(ep Endpoint) {
@@ -130,36 +134,19 @@ func CheckSocks(checkSocks CheckSocksConfig, socksListParam []string) {
 
 			}()
 
-			// Determine which socks5 endpoint to use for health checking.
-			var proxyAddr string
-			if ep.Kind == ProtoSocks5 {
-				proxyAddr = ep.URL.Host
-			} else {
-				if !IsGliderEnabled() {
-					// glider is not available, skip non-socks endpoints.
-					return
-				}
-				connector, err := GetOrCreateConnector(ep)
-				if err != nil {
-					fmt.Printf("创建 glider connector 失败，跳过端点 %s: %v\n", ep.Raw, err)
-					return
-				}
-				proxyAddr = fmt.Sprintf("127.0.0.1:%d", connector.Port)
-			}
-
-			socksProxy := "socks5://" + proxyAddr
-			proxyFn := func(_ *http.Request) (*url.URL, error) {
-				return url.Parse(socksProxy)
-			}
 			tr := &http.Transport{
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-				Proxy:           proxyFn,
+				DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+					return dialEndpoint(ctx, ep, network, address, requestTimeout)
+				},
 			}
 			client := &http.Client{
 				Transport: tr,
-				Timeout:   time.Duration(timeout) * time.Second,
+				Timeout:   requestTimeout,
 			}
-			req, err := http.NewRequest("GET", reqUrl, nil)
+			ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, "GET", reqUrl, nil)
 			if err != nil {
 				return
 			}
@@ -245,7 +232,9 @@ func WriteLinesToFile() error {
 }
 
 func DefineDial(ctx context.Context, network, address string) (net.Conn, error) {
-
+	if FailoverMode {
+		return transmitReqFromClientFailover(network, address)
+	}
 	return transmitReqFromClient(network, address)
 }
 
@@ -253,6 +242,66 @@ func transmitReqFromClient(network string, address string) (net.Conn, error) {
 	// 限制递归深度，避免无限递归
 	const maxRetries = 10
 	return transmitReqFromClientWithRetry(network, address, maxRetries)
+}
+
+// transmitReqFromClientFailover 故障切换模式：只有当前代理失败时才切换
+func transmitReqFromClientFailover(network string, address string) (net.Conn, error) {
+	const maxRetries = 10
+	return transmitReqFromClientFailoverWithRetry(network, address, maxRetries)
+}
+
+func transmitReqFromClientFailoverWithRetry(network string, address string, retriesLeft int) (net.Conn, error) {
+	if retriesLeft <= 0 {
+		return nil, fmt.Errorf("所有代理都无效，无法建立连接")
+	}
+
+	ep := getCurrentEndpoint() // 故障切换模式：获取当前代理，不自动切换
+	if ep.Raw == "" && ep.URL == nil {
+		return nil, fmt.Errorf("已无可用代理，请重新运行程序")
+	}
+
+	display := ep.Raw
+	if display == "" && ep.URL != nil {
+		display = ep.URL.String()
+	}
+	fmt.Println(time.Now().Format("2006-01-02 15:04:05") + "\t[故障切换模式] " + display)
+
+	timeout := time.Duration(Timeout) * time.Second
+	conn, err := dialEndpoint(context.Background(), ep, network, address, timeout)
+	if err != nil {
+		// 故障切换：当前代理失败，切换到下一个
+		fmt.Printf("%s 连接失败，切换到下一个代理......\n", display)
+		switchToNextEndpoint()
+		return transmitReqFromClientFailoverWithRetry(network, address, retriesLeft-1)
+	}
+
+	return conn, nil
+}
+
+// getCurrentEndpoint 获取当前代理（不切换索引）
+func getCurrentEndpoint() Endpoint {
+	mu.Lock()
+	defer mu.Unlock()
+	if len(EffectiveList) == 0 {
+		fmt.Println("***已无可用代理，请重新运行程序***")
+		return Endpoint{}
+	}
+	if len(EffectiveList) <= 2 {
+		fmt.Printf("***可用代理已仅剩%v个,%v，***\n", len(EffectiveList), EffectiveList)
+	}
+	if proxyIndex >= len(EffectiveList) {
+		proxyIndex = 0
+	}
+	return EffectiveEndpoints[proxyIndex]
+}
+
+// switchToNextEndpoint 切换到下一个代理
+func switchToNextEndpoint() {
+	mu.Lock()
+	defer mu.Unlock()
+	if len(EffectiveList) > 0 {
+		proxyIndex = (proxyIndex + 1) % len(EffectiveList)
+	}
 }
 
 func transmitReqFromClientWithRetry(network string, address string, retriesLeft int) (net.Conn, error) {
@@ -273,26 +322,7 @@ func transmitReqFromClientWithRetry(network string, address string, retriesLeft 
 	// 超时时间设置为 5 秒
 	timeout := time.Duration(Timeout) * time.Second
 
-	dialer := &net.Dialer{
-		Timeout: timeout,
-	}
-
-	// Decide which socks5 we dial: direct upstream or local glider connector.
-	var targetSocksAddr string
-	if ep.Kind == ProtoSocks5 {
-		targetSocksAddr = ep.URL.Host
-	} else {
-		connector, err := GetOrCreateConnector(ep)
-		if err != nil {
-			delInvalidEndpoint(ep)
-			fmt.Printf("glider connector 错误: %v，自动切换下一个......\n", err)
-			return transmitReqFromClientWithRetry(network, address, retriesLeft-1)
-		}
-		targetSocksAddr = fmt.Sprintf("127.0.0.1:%d", connector.Port)
-	}
-
-	dialect, _ := proxy.SOCKS5(network, targetSocksAddr, nil, dialer)
-	conn, err := dialect.Dial(network, address)
+	conn, err := dialEndpoint(context.Background(), ep, network, address, timeout)
 	if err != nil {
 		delInvalidEndpoint(ep)
 		fmt.Printf("%s 无效，自动切换下一个......\n", display)
