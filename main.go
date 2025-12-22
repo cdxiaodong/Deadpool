@@ -15,7 +15,7 @@ import (
 
 func main() {
 	utils.Banner()
-	fmt.Print("By:thinkoaa GitHub:https://github.com/thinkoaa/Deadpool\n\n\n")
+	fmt.Print("By:cdxiaodong GitHub:https://github.com/cdxiaodong/Deadpool_pro\n\n\n")
 
 	// 解析命令行参数
 	configPath := "config.toml"
